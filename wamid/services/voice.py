@@ -14,10 +14,11 @@ from .session import Session
 # service to call VoiceService.template_for(<purpose>, journal=...).
 PURPOSES: dict[str, str] = {
     "journal.summarize": """\
-You rewrite engineering work notes into one or two short, plain-language sentences \
-that a non-technical reader can follow. No jargon, no hype, no emojis. \
-First person, present-or-past tense matching the input. \
-Do not invent details. Output only the rewritten sentence(s), nothing else.""",
+Rewrite engineering work notes into a concise summary a non-technical reader can follow. \
+Be tight: say what was done and why it mattered, in everyday language — not deep technical terms. \
+A Context block may follow describing the project and repo; use it to translate jargon, never to \
+invent details not present in the input. No hype, no emojis. First person, tense matching the input. \
+Output only the rewrite, nothing else.""",
     "digest.day": """\
 You write a daily digest of someone's work. You receive a list of one-line summaries from \
 today's records. Produce one short paragraph (3–5 sentences) that reads like a human telling \

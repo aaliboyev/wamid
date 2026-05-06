@@ -28,12 +28,16 @@ def add(
     project: str | None = typer.Option(None, "--project", "-p", help="Attach to a project slug"),
     journal: str | None = typer.Option(None, "--journal", "-j", help="Default journal for this repo's commits"),
     name: str | None = typer.Option(None, "--name", help="Display name (default: dir basename)"),
+    description: str | None = typer.Option(None, "--description", "-d", help="One-line repo summary, used as LLM context"),
     author: str | None = typer.Option(None, "--author", help="Filter commits to this git author"),
 ):
     """Track a repo. Optionally attach it to a project / journal."""
     with open_session() as s:
         try:
-            r = RepoService(s).add(path, name=name, project=project, git_author=author, journal=journal)
+            r = RepoService(s).add(
+                path, name=name, description=description,
+                project=project, git_author=author, journal=journal,
+            )
         except RepoConflict as e:
             _bail(str(e))
         except ProjectNotFound as e:
@@ -91,6 +95,8 @@ def show(ref: str = typer.Argument(..., help="Repo id or path")):
         f"author: {r.git_author or '(any)'}\n"
         f"created_at: {datetime.fromtimestamp(r.created_at).isoformat()}"
     )
+    if r.description:
+        body += f"\n\n{r.description}"
     console.print(Panel(body, title=f"repo #{r.id}", border_style="cyan"))
 
 
@@ -98,15 +104,19 @@ def show(ref: str = typer.Argument(..., help="Repo id or path")):
 def update(
     ref: str = typer.Argument(...),
     name: str | None = typer.Option(None, "--name"),
+    description: str | None = typer.Option(None, "--description", "-d"),
     author: str | None = typer.Option(None, "--author"),
     journal: str | None = typer.Option(None, "--journal", "-j", help="Set default journal (empty string clears)"),
 ):
-    """Update name, author filter, and/or journal binding."""
-    if name is None and author is None and journal is None:
-        _bail("nothing to update — pass --name / --author / --journal")
+    """Update name, description, author filter, and/or journal binding."""
+    if name is None and description is None and author is None and journal is None:
+        _bail("nothing to update — pass --name / --description / --author / --journal")
     with open_session() as s:
         try:
-            r = RepoService(s).update(ref, name=name, git_author=author, journal=journal)
+            r = RepoService(s).update(
+                ref, name=name, description=description,
+                git_author=author, journal=journal,
+            )
         except RepoNotFound as e:
             _bail(str(e))
     console.print(f"[green]updated[/green] {r.name}")

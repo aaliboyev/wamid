@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Iterator, Literal
+from typing import Callable, Iterator, Literal
 
 from pydantic import BaseModel
 
@@ -53,6 +54,30 @@ class BadRepo:
 
 
 _COLS = "id, journal_id, project_id, ts, text, summary, source, source_meta, external_id"
+
+
+def _compose_system(template: str, *, project=None, repo: Repo | None = None) -> str:
+    """Append a structured Context block to the voice template so the LLM
+    knows what 'this' is when summarizing. Project tagline + description and
+    repo description give the model the framing it needs to translate
+    technical commit messages into plain language for non-technical readers.
+    """
+    bits: list[str] = []
+    if project is not None:
+        line = f"- project: {project.name}"
+        if project.tagline:
+            line += f" — {project.tagline}"
+        bits.append(line)
+        if project.description:
+            bits.append(f"  about: {project.description}")
+    if repo is not None:
+        line = f"- repo: {repo.name}"
+        if repo.description:
+            line += f" — {repo.description}"
+        bits.append(line)
+    if not bits:
+        return template
+    return f"{template}\n\nContext for this entry:\n" + "\n".join(bits)
 
 
 def _row(r) -> Record:
@@ -144,12 +169,12 @@ class RecordService:
         """Summarize a freeform record via LLM, then persist. Resolves journal as:
         explicit `journal` arg → project's primary_journal → default."""
         target = journal
-        if target is None and project:
-            p = ProjectService(self.s).get(project)
-            if p and p.primary_journal_slug:
-                target = p.primary_journal_slug
-        prompt = VoiceService(self.s).template_for("journal.summarize", journal=target)
-        summary = llm.chat(prompt, text)
+        project_obj = ProjectService(self.s).get(project) if project else None
+        if target is None and project_obj and project_obj.primary_journal_slug:
+            target = project_obj.primary_journal_slug
+        template = VoiceService(self.s).template_for("journal.summarize", journal=target)
+        system = _compose_system(template, project=project_obj)
+        summary = llm.chat(system, text)
         return self.add(
             text=text, summary=summary, source=source,
             project=project, journal=target, source_meta=source_meta,
@@ -165,12 +190,14 @@ class RecordService:
         """Summarize a single commit and store it. Resolves the destination journal as:
         explicit `journal` arg → repo.journal → repo.project's primary_journal → default."""
         target = journal or repo.journal_slug
-        if target is None and repo.project_slug:
-            p = ProjectService(self.s).get(repo.project_slug)
-            if p and p.primary_journal_slug:
-                target = p.primary_journal_slug
-        prompt = VoiceService(self.s).template_for("journal.summarize", journal=target)
-        summary = llm.chat(prompt, commit.text)
+        project_obj = (
+            ProjectService(self.s).get(repo.project_slug) if repo.project_slug else None
+        )
+        if target is None and project_obj and project_obj.primary_journal_slug:
+            target = project_obj.primary_journal_slug
+        template = VoiceService(self.s).template_for("journal.summarize", journal=target)
+        system = _compose_system(template, project=project_obj, repo=repo)
+        summary = llm.chat(system, commit.text)
         return self.add(
             text=commit.text,
             summary=summary,
@@ -194,15 +221,72 @@ class RecordService:
         until: str | None = None,
         project: str | None = None,
         journal: str | None = None,
+        parallel: int = 5,
+        on_each: Callable[[CommitCandidate, Record | None, Exception | None], None] | None = None,
     ) -> list[Record]:
-        out: list[Record] = []
+        """Auto-mode batch scan: summarize new commits in parallel, write sequentially.
+
+        - LLM calls fan out across `parallel` worker threads (httpx.Client is
+          thread-safe; Ollama serves concurrent requests fine).
+        - DB inserts run on the main thread (libsql_client is per-call sync,
+          and inserts are cheap).
+        - `on_each(cand, record, error)` fires as each commit lands, so callers
+          can stream feedback without buffering all results.
+        """
+        candidates: list[CommitCandidate] = []
         for item in self.scan_commits(since=since, until=until, project=project):
             if isinstance(item, BadRepo) or item.already_logged:
                 continue
+            candidates.append(item)
+        if not candidates:
+            return []
+
+        # Resolve target journal + build voiced system prompt per commit (sync, cheap).
+        prepared: list[tuple[CommitCandidate, str | None, str]] = []
+        psvc = ProjectService(self.s)
+        vsvc = VoiceService(self.s)
+        for cand in candidates:
+            target = journal or cand.repo.journal_slug
+            project_obj = psvc.get(cand.repo.project_slug) if cand.repo.project_slug else None
+            if target is None and project_obj and project_obj.primary_journal_slug:
+                target = project_obj.primary_journal_slug
+            template = vsvc.template_for("journal.summarize", journal=target)
+            system = _compose_system(template, project=project_obj, repo=cand.repo)
+            prepared.append((cand, target, system))
+
+        def summarize(item):
+            cand, target, system = item
             try:
-                out.append(self.log_commit(llm, item.commit, item.repo, journal=journal))
-            except DuplicateExternal:
-                continue
+                return (cand, target, llm.chat(system, cand.commit.text), None)
+            except Exception as e:
+                return (cand, target, None, e)
+
+        out: list[Record] = []
+        # Cap workers at the number of items so we don't spin idle threads.
+        workers = max(1, min(parallel, len(prepared)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(summarize, item) for item in prepared]
+            for fut in as_completed(futures):
+                cand, target, summary, error = fut.result()
+                if error is not None:
+                    if on_each:
+                        on_each(cand, None, error)
+                    continue
+                try:
+                    record = self.add(
+                        text=cand.commit.text, summary=summary, source="commit",
+                        project=cand.repo.project_slug, journal=target,
+                        source_meta={
+                            "sha": cand.commit.sha, "repo": cand.repo.path,
+                            "repo_name": cand.repo.name, "author": cand.commit.author,
+                        },
+                        ts=cand.commit.ts, external_id=cand.commit.sha,
+                    )
+                except DuplicateExternal:
+                    continue
+                out.append(record)
+                if on_each:
+                    on_each(cand, record, None)
         return out
 
     def delete(self, record_id: int) -> bool:

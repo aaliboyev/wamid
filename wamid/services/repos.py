@@ -13,6 +13,7 @@ class Repo(BaseModel):
     id: int
     path: str
     name: str
+    description: str | None = None
     git_author: str | None = None
     project_id: int | None = None
     project_slug: str | None = None
@@ -32,7 +33,7 @@ class RepoConflict(Exception):
 
 
 _COLS = (
-    "r.id, r.path, r.name, r.git_author, "
+    "r.id, r.path, r.name, r.description, r.git_author, "
     "r.project_id, p.slug, r.journal_id, j.slug, r.created_at"
 )
 _FROM = (
@@ -44,10 +45,10 @@ _FROM = (
 
 def _row(r) -> Repo:
     return Repo(
-        id=r[0], path=r[1], name=r[2], git_author=r[3],
-        project_id=r[4], project_slug=r[5],
-        journal_id=r[6], journal_slug=r[7],
-        created_at=r[8],
+        id=r[0], path=r[1], name=r[2], description=r[3], git_author=r[4],
+        project_id=r[5], project_slug=r[6],
+        journal_id=r[7], journal_slug=r[8],
+        created_at=r[9],
     )
 
 
@@ -99,6 +100,7 @@ class RepoService:
         self,
         path: str,
         name: str | None = None,
+        description: str | None = None,
         project: str | None = None,
         git_author: str | None = None,
         journal: str | None = None,
@@ -115,9 +117,10 @@ class RepoService:
         repo_name = name or Path(norm).name
         now = int(time.time())
         self.c.execute(
-            "INSERT INTO repos (path, name, git_author, project_id, journal_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [norm, repo_name, git_author, project_id, journal_id, now],
+            "INSERT INTO repos (path, name, description, git_author, "
+            "project_id, journal_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [norm, repo_name, description, git_author, project_id, journal_id, now],
         )
         return self.get(norm)
 
@@ -125,6 +128,7 @@ class RepoService:
         self,
         ref: str | int,
         name: str | None = None,
+        description: str | None = None,
         git_author: str | None = None,
         journal: str | None = None,
     ) -> Repo:
@@ -132,6 +136,8 @@ class RepoService:
         sets, args = [], []
         if name is not None:
             sets.append("name = ?"); args.append(name)
+        if description is not None:
+            sets.append("description = ?"); args.append(description)
         if git_author is not None:
             sets.append("git_author = ?"); args.append(git_author)
         if journal is not None:

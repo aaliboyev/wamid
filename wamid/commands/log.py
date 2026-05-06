@@ -105,45 +105,46 @@ def _scan_commits(project: str | None, journal: str | None, since: str, until: s
         )
         llm = LlmService(s.cfg)
         try:
-            logged = 0
-            for cand in new:
-                c = cand.commit
-                if auto:
+            if auto:
+                # Parallel summarize for cron / batch backfill — feedback streams
+                # via on_each so the user sees results as they land.
+                def on_each(cand, record, error):
+                    short = f"{cand.repo.name}/{cand.commit.short_sha}"
+                    if error is not None:
+                        console.print(f"[red]✗[/red] {short} — {error}")
+                    else:
+                        console.print(f"[green]✓[/green] {short} [dim]→[/dim] {record.summary}")
+
+                logged_records = rsvc.scan_and_log(
+                    llm, since=since, until=until, project=project, journal=journal,
+                    on_each=on_each,
+                )
+                console.print(f"\n[green]logged[/green] {len(logged_records)}/{len(new)}")
+            else:
+                # Interactive: serial, since the user reviews each before logging.
+                logged = 0
+                for cand in new:
+                    c = cand.commit
+                    proj = f"[dim]→ {cand.repo.project_slug}[/dim]" if cand.repo.project_slug else ""
+                    console.print(
+                        f"\n[bold]{cand.repo.name}[/bold] {c.short_sha} "
+                        f"[dim]{datetime.fromtimestamp(c.ts):%Y-%m-%d %H:%M}[/dim] {proj}"
+                    )
+                    console.print(f"  {c.subject}")
+                    if not typer.confirm("log this?", default=True):
+                        continue
                     try:
                         entry = rsvc.log_commit(llm, c, cand.repo, journal=journal)
                     except DuplicateExternal:
                         continue
                     except LlmError as e:
-                        console.print(f"[red]✗[/red] {cand.repo.name}/{c.short_sha} — {e}")
+                        console.print(f"[red]llm failed:[/red] {e} — skipping")
                         continue
-                    # Per-commit ✓ line so cron / git-hook logs are scannable.
-                    console.print(
-                        f"[green]✓[/green] {cand.repo.name}/{c.short_sha} "
-                        f"[dim]→[/dim] {entry.summary}"
-                    )
+                    console.print(f"  [dim]→ {entry.summary}[/dim]")
                     logged += 1
-                    continue
-
-                proj = f"[dim]→ {cand.repo.project_slug}[/dim]" if cand.repo.project_slug else ""
-                console.print(
-                    f"\n[bold]{cand.repo.name}[/bold] {c.short_sha} "
-                    f"[dim]{datetime.fromtimestamp(c.ts):%Y-%m-%d %H:%M}[/dim] {proj}"
-                )
-                console.print(f"  {c.subject}")
-                if not typer.confirm("log this?", default=True):
-                    continue
-                try:
-                    entry = rsvc.log_commit(llm, c, cand.repo, journal=journal)
-                except DuplicateExternal:
-                    continue
-                except LlmError as e:
-                    console.print(f"[red]llm failed:[/red] {e} — skipping")
-                    continue
-                console.print(f"  [dim]→ {entry.summary}[/dim]")
-                logged += 1
+                console.print(f"\n[green]logged[/green] {logged}/{len(new)}")
         finally:
             llm.close()
-        console.print(f"\n[green]logged[/green] {logged}/{len(new)}")
 
 
 def recent(

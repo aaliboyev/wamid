@@ -17,6 +17,7 @@ router = APIRouter(prefix="/repos", tags=["repos"])
 class RepoCreate(BaseModel):
     path: str = Field(min_length=1)
     name: str | None = None
+    description: str | None = None
     project: str | None = None
     journal: str | None = None
     git_author: str | None = None
@@ -24,6 +25,7 @@ class RepoCreate(BaseModel):
 
 class RepoUpdate(BaseModel):
     name: str | None = None
+    description: str | None = None
     git_author: str | None = None
     journal: str | None = None  # empty string clears
 
@@ -56,7 +58,7 @@ def get_repo(repo_id: int, s: Session = Depends(session_dep)):
 def create_repo(body: RepoCreate, s: Session = Depends(session_dep)):
     try:
         return RepoService(s).add(
-            path=body.path, name=body.name,
+            path=body.path, name=body.name, description=body.description,
             project=body.project, git_author=body.git_author,
             journal=body.journal,
         )
@@ -70,7 +72,8 @@ def create_repo(body: RepoCreate, s: Session = Depends(session_dep)):
 def update_repo(repo_id: int, body: RepoUpdate, s: Session = Depends(session_dep)):
     try:
         return RepoService(s).update(
-            repo_id, name=body.name, git_author=body.git_author, journal=body.journal,
+            repo_id, name=body.name, description=body.description,
+            git_author=body.git_author, journal=body.journal,
         )
     except RepoNotFound as e:
         raise HTTPException(404, str(e))

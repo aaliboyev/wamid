@@ -80,7 +80,8 @@ def scan(
     s: Session = Depends(session_dep),
     llm: LlmService = Depends(llm_dep),
 ):
-    """Auto-log every not-yet-logged commit in the window. Returns the new records."""
+    """Auto-log every not-yet-logged commit in the window. Summarizes in
+    parallel internally; returns the new records."""
     try:
         return RecordService(s).scan_and_log(
             llm=llm, since=body.since, until=body.until,
