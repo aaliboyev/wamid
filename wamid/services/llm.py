@@ -32,6 +32,12 @@ class LlmService:
         self.cfg = cfg
         self._client = client or httpx.Client(timeout=cfg.llm.timeout_s)
 
+    def _payload(self, **fields) -> dict:
+        p = {"model": self.cfg.llm.model, **fields}
+        if self.cfg.llm.reasoning_effort is not None:
+            p["reasoning_effort"] = self.cfg.llm.reasoning_effort
+        return p
+
     def _post(self, payload: dict) -> dict:
         """POST with one retry on transient failures (timeouts, 5xx, network errors).
         4xx is our bug — fail fast, don't retry."""
@@ -64,9 +70,7 @@ class LlmService:
         raise LlmError(f"llm request failed after retry: {last}") from last
 
     def complete(self, messages: list[dict], temperature: float = 0.4) -> str:
-        data = self._post(
-            {"model": self.cfg.llm.model, "messages": messages, "temperature": temperature}
-        )
+        data = self._post(self._payload(messages=messages, temperature=temperature))
         try:
             return data["choices"][0]["message"]["content"].strip()
         except (KeyError, IndexError) as e:
@@ -87,12 +91,7 @@ class LlmService:
         """One turn with tool-call support. Returns parsed tool calls or text.
         The caller is responsible for appending `assistant_message` to history."""
         data = self._post(
-            {
-                "model": self.cfg.llm.model,
-                "messages": messages,
-                "tools": tools,
-                "temperature": temperature,
-            }
+            self._payload(messages=messages, tools=tools, temperature=temperature)
         )
         try:
             msg = data["choices"][0]["message"]

@@ -28,6 +28,7 @@ class LlmConfig(BaseModel):
     model: str = "gemma-3-27b"
     api_key: str = ""
     timeout_s: float = 300.0
+    reasoning_effort: str | None = None  # "none" disables thinking on Ollama /v1
 
 
 class Config(BaseSettings):
@@ -68,6 +69,7 @@ token = ""
 endpoint = "http://localhost:8080/v1"
 model = "gemma-3-27b"
 api_key = ""
+reasoning_effort = "none"
 
 [api]
 read_only = false
